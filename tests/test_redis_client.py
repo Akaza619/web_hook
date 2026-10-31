@@ -164,6 +164,147 @@ async def test_connect_creates_one_client_with_timeouts(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("url", [None, "", "   "])
+async def test_missing_redis_url_is_rejected_before_client_creation(
+    monkeypatch,
+    caplog,
+    url: str | None,
+) -> None:
+    created = False
+
+    def fake_from_url(*args: Any, **kwargs: Any) -> FakeRedis:
+        nonlocal created
+        created = True
+        return FakeRedis()
+
+    monkeypatch.setattr(
+        redis_module.redis_asyncio.Redis,
+        "from_url",
+        fake_from_url,
+    )
+
+    manager = RedisManager(url, timeout_seconds=0.5)  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING, logger=redis_module.__name__):
+        assert await manager.connect() is False
+
+    assert created is False
+    assert manager.connected is False
+    assert "ValueError" in caplog.text
+    assert "missing or empty" in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://redis.example:6379/0",
+        "not-a-redis-url",
+        "redis://",
+        "redis://redis.example:not-a-port/0",
+        "redis://[invalid-ipv6/0",
+    ],
+)
+async def test_malformed_or_unsupported_redis_url_is_rejected_before_client_creation(
+    monkeypatch,
+    caplog,
+    url: str,
+) -> None:
+    created = False
+
+    def fake_from_url(*args: Any, **kwargs: Any) -> FakeRedis:
+        nonlocal created
+        created = True
+        return FakeRedis()
+
+    monkeypatch.setattr(
+        redis_module.redis_asyncio.Redis,
+        "from_url",
+        fake_from_url,
+    )
+
+    manager = RedisManager(url, timeout_seconds=0.5)
+
+    with caplog.at_level(logging.WARNING, logger=redis_module.__name__):
+        assert await manager.connect() is False
+
+    assert created is False
+    assert manager.connected is False
+    assert "ValueError" in caplog.text
+    assert "REDIS_URL" in caplog.text
+    assert url not in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "redis://localhost:6379/0",
+        "rediss://redis.example:6380/0",
+    ],
+)
+async def test_supported_redis_url_schemes_reach_the_client(
+    monkeypatch,
+    url: str,
+) -> None:
+    fake = FakeRedis()
+    captured: dict[str, str] = {}
+
+    def fake_from_url(received_url: str, **kwargs: Any) -> FakeRedis:
+        captured["url"] = received_url
+        return fake
+
+    monkeypatch.setattr(
+        redis_module.redis_asyncio.Redis,
+        "from_url",
+        fake_from_url,
+    )
+
+    manager = RedisManager(url, timeout_seconds=0.5)
+
+    assert await manager.connect() is True
+    assert captured["url"] == url
+    assert manager.connected is True
+
+
+@pytest.mark.anyio
+async def test_client_creation_failure_logs_type_message_and_sanitized_traceback(
+    monkeypatch,
+    caplog,
+) -> None:
+    secret_url = "rediss://webhook-user:super-secret-password@redis.example:6380/0"
+
+    def failing_from_url(url: str, **kwargs: Any) -> FakeRedis:
+        raise ValueError(
+            f"invalid Redis URL {url} for user webhook-user "
+            "with password super-secret-password"
+        )
+
+    monkeypatch.setattr(
+        redis_module.redis_asyncio.Redis,
+        "from_url",
+        failing_from_url,
+    )
+
+    manager = RedisManager(secret_url, timeout_seconds=0.5)
+
+    with caplog.at_level(logging.WARNING, logger=redis_module.__name__):
+        assert await manager.connect() is False
+
+    assert manager.connected is False
+    assert "ValueError" in caplog.text
+    assert "invalid Redis URL" in caplog.text
+    assert "<redacted-redis-url>" in caplog.text
+    assert "<redacted-credential>" in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+    assert secret_url not in caplog.text
+    assert "super-secret-password" not in caplog.text
+    assert "webhook-user" not in caplog.text
+
+
+@pytest.mark.anyio
 async def test_successful_ping_updates_connected_state() -> None:
     manager, fake = make_manager()
     manager._client = fake

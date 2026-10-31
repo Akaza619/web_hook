@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import traceback
 from typing import Any, Awaitable, Callable
+from urllib.parse import unquote, urlsplit
 
 import redis.asyncio as redis_asyncio
 from redis.exceptions import (
@@ -76,6 +79,116 @@ def _error_category(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+_SUPPORTED_REDIS_SCHEMES = frozenset({"redis", "rediss"})
+
+# Match complete Redis URLs, including any embedded userinfo. Requiring at
+# least one character after ``://`` keeps documentation strings such as
+# "redis:// or rediss://" intact.
+_REDIS_URL_PATTERN = re.compile(r"\brediss?://[^\s'\"<>(),;]+", re.IGNORECASE)
+
+# Catch credentials passed as query parameters or key/value pairs.
+_CREDENTIAL_PARAM_PATTERN = re.compile(
+    r"(?i)\b(pass(?:word|wd)?|pwd|secret|token|auth)\b(\s*[=:]\s*)([^\s&,;)}\]]+)"
+)
+
+
+def _validate_redis_url(url: str | None) -> str:
+    """Validate ``REDIS_URL`` before it reaches the Redis client.
+
+    Returns the trimmed URL. Raises :class:`ValueError` with a message that is
+    safe to log: it names the problem but never includes the URL or any
+    credentials embedded in it.
+    """
+
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("REDIS_URL is missing or empty.")
+
+    candidate = url.strip()
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        raise ValueError("REDIS_URL is malformed and could not be parsed.") from None
+
+    scheme = parsed.scheme.lower()
+    if scheme not in _SUPPORTED_REDIS_SCHEMES:
+        raise ValueError(
+            "REDIS_URL must use a supported scheme (redis:// or rediss://); "
+            f"got {scheme!r}."
+        )
+
+    try:
+        hostname = parsed.hostname
+        parsed.port  # Accessing this validates that the port is numeric.
+    except ValueError:
+        raise ValueError(
+            "REDIS_URL is malformed (invalid host or port)."
+        ) from None
+
+    if not hostname:
+        raise ValueError("REDIS_URL must include a host.")
+
+    return candidate
+
+
+def _url_credential_values(url: str | None) -> tuple[str, ...]:
+    """Return username/password values embedded in ``url`` for redaction."""
+
+    if not isinstance(url, str) or not url:
+        return ()
+
+    try:
+        parsed = urlsplit(url)
+        raw_values = (parsed.username, parsed.password)
+    except ValueError:
+        return ()
+
+    values: set[str] = set()
+    for value in raw_values:
+        if not value:
+            continue
+        for candidate in (value, unquote(value)):
+            # Avoid replacing very short values that could be ordinary words.
+            if len(candidate) >= 3:
+                values.add(candidate)
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def _redact_redis_secrets(text: str, url: str | None) -> str:
+    """Remove Redis URLs and credentials from text before logging it."""
+
+    if not text:
+        return text
+
+    redacted = text
+    if isinstance(url, str) and url:
+        redacted = redacted.replace(url, "<redacted-redis-url>")
+
+    redacted = _REDIS_URL_PATTERN.sub("<redacted-redis-url>", redacted)
+
+    for credential in _url_credential_values(url):
+        # Only replace standalone values; this keeps identifiers such as
+        # ``redis_asyncio`` readable when a username happens to be "redis".
+        credential_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(credential)}(?![A-Za-z0-9_])"
+        )
+        redacted = credential_pattern.sub("<redacted-credential>", redacted)
+
+    redacted = _CREDENTIAL_PARAM_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}<redacted-credential>",
+        redacted,
+    )
+    return redacted
+
+
+def _format_sanitized_traceback(exc: BaseException, url: str | None) -> str:
+    """Format a traceback, including chained errors, with secrets redacted."""
+
+    formatted = "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    )
+    return _redact_redis_secrets(formatted, url)
+
+
 class RedisManager:
     """Own and reuse one asynchronous Redis client for the application."""
 
@@ -120,8 +233,9 @@ class RedisManager:
         async with self._lock:
             if self._client is None:
                 try:
+                    validated_url = _validate_redis_url(self._url)
                     self._client = redis_asyncio.Redis.from_url(
-                        self._url,
+                        validated_url,
                         decode_responses=True,
                         socket_connect_timeout=self._timeout_seconds,
                         socket_timeout=self._timeout_seconds,
@@ -131,8 +245,11 @@ class RedisManager:
                 except (RedisError, ValueError, OSError) as exc:
                     self._connected = False
                     logger.warning(
-                        "Redis client creation failed (%s); health will report degraded.",
-                        _error_category(exc),
+                        "Redis client creation failed (%s: %s); "
+                        "health will report degraded.\n%s",
+                        type(exc).__name__,
+                        _redact_redis_secrets(str(exc), self._url),
+                        _format_sanitized_traceback(exc, self._url),
                     )
                     return False
 
