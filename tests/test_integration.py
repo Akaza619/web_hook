@@ -149,7 +149,7 @@ def test_valid_signed_refund_is_processed(
     response = post_body(client, body)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
     assert (
         asyncio.run(get_transaction_state(redis=manager, tx_ref="TX-INT-VALID"))
         == "completed"
@@ -239,7 +239,7 @@ def test_prompt_injection_cannot_modify_the_refund_limit(
     )
 
     assert allowed.status_code == 200
-    assert allowed.json() == {"status": "processed"}
+    assert allowed.json()["status"] == "processed"
 
 
 def test_duplicate_refund_is_not_processed_twice(
@@ -255,7 +255,7 @@ def test_duplicate_refund_is_not_processed_twice(
     third = post_body(client, body)
 
     assert first.status_code == 200
-    assert first.json() == {"status": "processed"}
+    assert first.json()["status"] == "processed"
     assert second.status_code == 409
     assert second.json() == {"status": "duplicate"}
     assert third.status_code == 409
@@ -297,7 +297,7 @@ def test_concurrent_duplicate_refunds_process_exactly_once(monkeypatch) -> None:
     assert statuses.count(200) == 1
     assert statuses.count(409) == 9
     assert sum(
-        1 for response in responses if response.json() == {"status": "processed"}
+        1 for response in responses if response.json()["status"] == "processed"
     ) == 1
     assert sum(
         1 for response in responses if response.json() == {"status": "duplicate"}
@@ -321,8 +321,8 @@ def test_different_transaction_references_are_independent(
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert first.json() == {"status": "processed"}
-    assert second.json() == {"status": "processed"}
+    assert first.json()["status"] == "processed"
+    assert second.json()["status"] == "processed"
     assert asyncio.run(
         get_transaction_state(redis=manager, tx_ref="TX-INT-A")
     ) == "completed"
@@ -509,7 +509,7 @@ def test_redis_unavailable_does_not_bypass_idempotency() -> None:
         (refund_payload(255, include_tx_ref=False), "missing_tx_ref"),
         (refund_payload(255, tx_ref=None), "missing_tx_ref"),
         (refund_payload(255, tx_ref="   "), "missing_tx_ref"),
-        (refund_payload(255, tx_ref=123), "invalid_tx_ref"),
+        (refund_payload(255, tx_ref=True), "invalid_tx_ref"),
     ],
 )
 def test_missing_or_invalid_transaction_reference_is_rejected(
@@ -575,3 +575,64 @@ def test_secrets_are_never_returned(client: TestClient) -> None:
         assert SIGNING_SECRET not in response.text
         assert REDIS_URL not in response.text
         assert "redis://" not in response.text
+
+
+def test_processed_reply_reports_refund_aed_within_the_limit(
+    client: TestClient,
+) -> None:
+    response = post_body(client, encode_json(refund_payload(199.5, tx_ref="TX-INT-REPLY")))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "processed",
+        "tx_ref_3126": "TX-INT-REPLY",
+        "refund_aed": 199.5,
+        "currency": "AED",
+    }
+
+
+@pytest.mark.parametrize(
+    "amounts",
+    [{"amount": 500}, {"amount_aed": 321}, {"refund_aed": 100, "amount": 5000}],
+)
+def test_amount_aliases_cannot_bypass_the_limit(
+    client: TestClient,
+    manager: InMemoryRedisManager,
+    amounts: dict,
+) -> None:
+    body = encode_json(
+        {
+            "event": "refund.requested",
+            "payload": {"tx_ref_3126": "TX-INT-ALIAS", "currency": "AED", **amounts},
+        }
+    )
+    response = post_body(client, body)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "refund_limit_exceeded"
+    assert manager.remaining_ttl(idempotency_key("TX-INT-ALIAS")) is None
+
+
+def test_amount_alias_and_integer_tx_ref_are_processed(client: TestClient) -> None:
+    body = encode_json(
+        {"event": "refund.requested", "payload": {"tx_ref_3126": 90210, "amount": 50}}
+    )
+    first = post_body(client, body)
+    second = post_body(client, body)
+
+    assert first.status_code == 200
+    assert first.json()["refund_aed"] == 50
+    assert first.json()["tx_ref_3126"] == "90210"
+    assert second.status_code == 409
+    assert second.json() == {"status": "duplicate"}
+
+
+@pytest.mark.parametrize("field", ["message", "customer_message", "text", "query"])
+def test_faq_question_aliases_are_answered(client: TestClient, field: str) -> None:
+    body = encode_json(
+        {"event": "faq.query", "payload": {field: "What is your refund policy?"}}
+    )
+    response = post_body(client, body)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["answered"] is True

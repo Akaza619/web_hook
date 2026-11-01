@@ -3,10 +3,11 @@
 The refund limit is always supplied by server-side configuration
 (``Settings.refund_limit_aed``). Nothing in an incoming payload can change it.
 
-Only three payload fields are read:
+Only these payload fields are read:
 
 * ``tx_ref_3126`` - transaction reference
-* ``refund_aed``  - requested amount
+* ``refund_aed``  - requested amount (aliases: ``amount_aed``, ``amount``,
+  ``refund_amount``; the largest present amount is enforced)
 * ``currency``    - optional, defaults to AED
 
 Every other field, including ``customer_message``, is untrusted data and is
@@ -25,6 +26,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 SUPPORTED_CURRENCY = "AED"
+# ``refund_aed`` is the documented field; the aliases tolerate other senders.
+AMOUNT_FIELDS = ("refund_aed", "amount_aed", "amount", "refund_amount")
 
 # Stable validation codes shared with the HTTP error envelope.
 MISSING_AMOUNT = "missing_refund_amount"
@@ -142,6 +145,25 @@ def parse_refund_amount(value: Any) -> Decimal:
     return amount
 
 
+def requested_refund_amount(payload: Mapping[str, Any]) -> Decimal:
+    """Return the requested amount from ``refund_aed`` or a known alias.
+
+    When several amount fields are present, every one must be valid and the
+    largest is enforced, so an alias can never be used to slip past the limit.
+    """
+
+    present = [payload[field] for field in AMOUNT_FIELDS if payload.get(field) is not None]
+    if not present:
+        return parse_refund_amount(None)
+    return max(parse_refund_amount(value) for value in present)
+
+
+def json_amount(value: Decimal) -> int | float:
+    """Render a Decimal as a JSON number for API replies."""
+
+    return int(value) if value == value.to_integral_value() else float(value)
+
+
 def validate_currency(value: Any) -> str:
     """Return the normalized currency code, defaulting to AED when absent.
 
@@ -214,6 +236,8 @@ def validate_refund(
     """
 
     tx_ref_value = payload.get("tx_ref_3126")
+    if isinstance(tx_ref_value, int) and not isinstance(tx_ref_value, bool):
+        tx_ref_value = str(tx_ref_value)
     tx_ref = tx_ref_value.strip() if isinstance(tx_ref_value, str) else None
 
     try:
@@ -224,7 +248,7 @@ def validate_refund(
                 details={"field": "payload.tx_ref_3126"},
             )
         currency = validate_currency(payload.get("currency"))
-        amount = parse_refund_amount(payload.get("refund_aed"))
+        amount = requested_refund_amount(payload)
         enforce_refund_limit(refund_amount_aed=amount, limit_aed=limit_aed)
     except RefundValidationError as exc:
         return RefundValidation(

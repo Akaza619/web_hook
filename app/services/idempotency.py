@@ -32,8 +32,8 @@ DEFAULT_LOCK_TTL_SECONDS = 300
 MAX_TX_REF_LENGTH = 128
 TX_REF_FIELD = "payload.tx_ref_3126"
 
-# Keep keys predictable and safe: letters, digits, dot, underscore, hyphen.
-_TX_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# Redis keys are binary-safe; only whitespace and control characters are refused.
+_TX_REF_PATTERN = re.compile(r"^[^\s\x00-\x1f\x7f]+$")
 
 MISSING_TX_REF = "missing_tx_ref"
 INVALID_TX_REF = "invalid_tx_ref"
@@ -83,14 +83,16 @@ class IdempotencyOutcome:
 def validate_transaction_reference(value: Any) -> str:
     """Validate and normalize ``payload.tx_ref_3126``.
 
-    The reference must be a non-empty string of at most 128 characters using
-    only letters, digits, dots, underscores, and hyphens. It must start with a
-    letter or digit.
+    The reference must be a non-empty string (or integer) of at most 128
+    characters without whitespace or control characters.
 
     Raises:
         TransactionReferenceError: For missing, non-string, empty, overlong, or
             character-invalid references.
     """
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = str(value)
 
     if value is None:
         raise TransactionReferenceError(
@@ -127,7 +129,7 @@ def validate_transaction_reference(value: Any) -> str:
             "Transaction reference contains invalid characters.",
             details={
                 "field": TX_REF_FIELD,
-                "allowed": "letters, digits, dot, underscore, hyphen",
+                "allowed": "no whitespace or control characters",
             },
         )
 

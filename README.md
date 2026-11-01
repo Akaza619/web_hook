@@ -230,7 +230,7 @@ The endpoint keeps the Phase 2-7 contract (the assessment starter contract):
 
 | Case | HTTP | Body |
 | --- | --- | --- |
-| Refund processed | 200 | `{"status": "processed"}` |
+| Refund processed | 200 | `{"status": "processed", "tx_ref_3126": ..., "refund_aed": <number>, "currency": "AED"}` |
 | Duplicate refund | 409 | `{"status": "duplicate"}` |
 | Refund rejected | 400/403 | shared error envelope (`error.code`, `error.details`) |
 | FAQ answered | 200 | `{"status": "success", "data": {...}}` |
@@ -238,8 +238,8 @@ The endpoint keeps the Phase 2-7 contract (the assessment starter contract):
 | Redis unavailable for refund | 503 | `idempotency_unavailable` |
 | Invalid signature | 401 | `missing_signature` / `malformed_signature` / `invalid_signature` |
 
-Refund responses intentionally do not echo refund data or transaction
-references; callers already know the reference they sent.
+A processed refund reports the approved `refund_aed` as a JSON number, which
+is always at or below the configured limit.
 
 #### Signature contract
 
@@ -302,7 +302,7 @@ The default maximum refund is **320 AED**, configurable with
 | Field | Rule |
 | --- | --- |
 | `payload.tx_ref_3126` | Required, non-empty string |
-| `payload.refund_aed` | Required, finite numeric value greater than zero |
+| `payload.refund_aed` | Required, finite numeric value greater than zero. Aliases `amount_aed`, `amount`, `refund_amount` are accepted; if several are present all must be valid and the largest is enforced |
 | `payload.currency` | Optional; defaults to `AED`; only `AED` is supported |
 
 Rules:
@@ -338,7 +338,10 @@ Response: **200 OK**
 
 ```json
 {
-  "status": "processed"
+  "status": "processed",
+  "tx_ref_3126": "TX1001",
+  "refund_aed": 255,
+  "currency": "AED"
 }
 ```
 
@@ -466,10 +469,10 @@ available, which is what demonstrates atomicity; the in-memory fake uses an
 | Case | Result |
 | --- | --- |
 | Missing, `null`, empty, or whitespace-only | 400 `missing_tx_ref` |
-| Not a string (number, boolean, list, object) | 400 `invalid_tx_ref` |
+| Not a string or integer (float, boolean, list, object) | 400 `invalid_tx_ref` |
 | Longer than 128 characters | 400 `invalid_tx_ref` |
-| Contains anything except letters, digits, `.`, `_`, `-` | 400 `invalid_tx_ref` |
-| Does not start with a letter or digit | 400 `invalid_tx_ref` |
+| Contains whitespace or control characters | 400 `invalid_tx_ref` |
+| Integer | Converted to its decimal string |
 | Valid | Trimmed and used as the key suffix |
 
 Only `payload.tx_ref_3126` is used. Other fields such as `tx_ref` are ignored.
@@ -553,7 +556,8 @@ resolve to the same entry:
 Other normalization rules:
 
 - The normalized question is the Redis key suffix under `pinhire:faq:`.
-- Only `payload.question` is read; the original text is echoed back unchanged.
+- The question is read from `payload.question`, or else the first non-empty
+  `message`, `customer_message`, `text`, or `query`; it is echoed back unchanged.
 - A missing, non-string, empty, or punctuation-only question returns **400**
   `missing_question`.
 - Unknown questions return **200** with `matched: false`, a safe placeholder

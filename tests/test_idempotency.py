@@ -89,9 +89,16 @@ def build_client(manager: InMemoryRedisManager | None = None) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tx_ref", ["TX1001", "TX-1001", "tx_1001", "A.B-9"])
+@pytest.mark.parametrize(
+    "tx_ref",
+    ["TX1001", "TX-1001", "tx_1001", "A.B-9", "TX/1001", "TX@1001", "tx:3126#1", "-TX1001"],
+)
 def test_valid_transaction_references_are_normalized(tx_ref: str) -> None:
     assert validate_transaction_reference(tx_ref) == tx_ref
+
+
+def test_integer_transaction_reference_is_accepted_as_text() -> None:
+    assert validate_transaction_reference(123) == "123"
 
 
 def test_transaction_reference_is_trimmed() -> None:
@@ -106,7 +113,7 @@ def test_missing_or_empty_transaction_reference_is_rejected(value) -> None:
     assert excinfo.value.code == "missing_tx_ref"
 
 
-@pytest.mark.parametrize("value", [123, 1.5, True, [], {}, ["TX1"]])
+@pytest.mark.parametrize("value", [1.5, True, [], {}, ["TX1"]])
 def test_non_string_transaction_reference_is_rejected(value) -> None:
     with pytest.raises(TransactionReferenceError) as excinfo:
         validate_transaction_reference(value)
@@ -119,15 +126,13 @@ def test_non_string_transaction_reference_is_rejected(value) -> None:
     [
         "A" * 129,
         "TX 1001",
-        "TX/1001",
-        "TX@1001",
-        "TX#1001",
         "TX\n1001",
-        "-TX1001",
-        ".TX1001",
+        "TX\t1001",
+        "TX\x001001",
+        "TX\x7f1001",
     ],
 )
-def test_invalid_transaction_reference_is_rejected(value: str) -> None:
+def test_invalid_transaction_reference_values_are_rejected(value: str) -> None:
     with pytest.raises(TransactionReferenceError) as excinfo:
         validate_transaction_reference(value)
 
@@ -154,7 +159,7 @@ def test_first_transaction_request_is_processed() -> None:
         response = post_body(client, encode_json(refund_payload(100)))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
     assert manager.remaining_ttl("pinhire:idempotency:TX1001") is not None
 
 
@@ -165,7 +170,7 @@ def test_repeated_transaction_request_is_a_duplicate() -> None:
         second = post_body(client, encode_json(refund_payload(100)))
 
     assert first.status_code == 200
-    assert first.json() == {"status": "processed"}
+    assert first.json()["status"] == "processed"
     assert second.status_code == 409
     assert second.json() == {"status": "duplicate"}
 
@@ -179,7 +184,7 @@ def test_same_transaction_sent_three_times_processes_once() -> None:
         ]
 
     assert [response.status_code for response in responses] == [200, 409, 409]
-    assert responses[0].json() == {"status": "processed"}
+    assert responses[0].json()["status"] == "processed"
     assert responses[1].json() == {"status": "duplicate"}
     assert responses[2].json() == {"status": "duplicate"}
 
@@ -198,8 +203,8 @@ def test_different_transaction_references_are_processed_independently() -> None:
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert first.json() == {"status": "processed"}
-    assert second.json() == {"status": "processed"}
+    assert first.json()["status"] == "processed"
+    assert second.json()["status"] == "processed"
 
 
 def test_completed_transaction_remains_protected_for_300_seconds() -> None:
@@ -226,7 +231,7 @@ def test_completed_transaction_remains_protected_for_300_seconds() -> None:
     assert still_duplicate.status_code == 409
     assert still_duplicate.json() == {"status": "duplicate"}
     assert after_expiry.status_code == 200
-    assert after_expiry.json() == {"status": "processed"}
+    assert after_expiry.json()["status"] == "processed"
 
 
 def test_processing_lock_expires_after_300_seconds() -> None:
@@ -262,7 +267,7 @@ def test_missing_transaction_reference_is_rejected_before_redis() -> None:
 
 @pytest.mark.parametrize(
     "tx_ref",
-    ["", "   ", 123, True, "A" * 129, "TX 1001", "TX/1001", "TX@1001"],
+    ["", "   ", 1.5, True, "A" * 129, "TX 1001", "TX\n1001"],
 )
 def test_invalid_transaction_reference_is_rejected(tx_ref) -> None:
     manager = InMemoryRedisManager()
@@ -329,7 +334,7 @@ def test_redis_unavailable_fails_safely_without_in_memory_fallback(
 
     # The failed attempt was not recorded anywhere, so a later retry runs.
     assert retried.status_code == 200
-    assert retried.json() == {"status": "processed"}
+    assert retried.json()["status"] == "processed"
 
 
 def test_hmac_is_required_before_idempotency() -> None:
@@ -383,7 +388,7 @@ def test_processing_failure_releases_lock_and_allows_retry(monkeypatch) -> None:
     assert failed.json()["error"]["code"] == "refund_processing_failed"
     assert lock_after_failure is None
     assert retried.status_code == 200
-    assert retried.json() == {"status": "processed"}
+    assert retried.json()["status"] == "processed"
     assert calls == 2
 
 

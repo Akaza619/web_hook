@@ -33,6 +33,7 @@ from app.services.idempotency import (
 from app.services.refund import (
     RefundValidation,
     format_amount,
+    json_amount,
     validate_refund,
 )
 from app.services.redis_client import RedisOperationError, RedisUnavailableError
@@ -50,6 +51,7 @@ router = APIRouter()
 REFUND_EVENT = "refund.requested"
 FAQ_EVENT = "faq.query"
 SUPPORTED_EVENTS = frozenset({REFUND_EVENT, FAQ_EVENT})
+FAQ_QUESTION_FIELDS = ("question", "message", "customer_message", "text", "query")
 
 
 class WebhookRequestError(Exception):
@@ -187,9 +189,18 @@ def parse_webhook_event(raw_body: bytes) -> WebhookEvent:
             ) from exc
         return WebhookEvent(name=event_name, payload=payload, tx_ref=tx_ref)
 
+    # ``question`` is preferred; the aliases tolerate other FAQ senders.
+    question_field = next(
+        (
+            field
+            for field in FAQ_QUESTION_FIELDS
+            if isinstance(payload.get(field), str) and payload[field].strip()
+        ),
+        "question",
+    )
     question = _require_non_empty_string(
         payload,
-        "question",
+        question_field,
         code="missing_question",
         event_label="FAQ",
     )
@@ -393,7 +404,12 @@ async def _process_refund_event(
 
     return JSONResponse(
         status_code=200,
-        content={"status": "processed"},
+        content={
+            "status": "processed",
+            "tx_ref_3126": event.tx_ref,
+            "refund_aed": json_amount(validation.amount_aed),
+            "currency": validation.currency,
+        },
     )
 
 

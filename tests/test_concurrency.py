@@ -121,7 +121,7 @@ def test_ten_simultaneous_identical_requests_process_once(monkeypatch) -> None:
     assert statuses.count(200) == 1
     assert statuses.count(409) == 9
     assert sum(
-        1 for response in responses if response.json() == {"status": "processed"}
+        1 for response in responses if response.json()["status"] == "processed"
     ) == 1
     assert sum(
         1 for response in responses if response.json() == {"status": "duplicate"}

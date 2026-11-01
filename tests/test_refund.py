@@ -245,49 +245,49 @@ def test_refunds_at_or_below_limit_are_accepted(
     response = post_body(client, encode_json(refund_payload(amount)))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
 
 
 def test_refund_of_100_aed_is_accepted(client: TestClient) -> None:
     response = post_body(client, encode_json(refund_payload(100)))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
 
 
 def test_refund_of_255_aed_is_accepted(client: TestClient) -> None:
     response = post_body(client, encode_json(refund_payload(255)))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
 
 
 def test_refund_exactly_equal_to_320_aed_is_accepted(client: TestClient) -> None:
     response = post_body(client, encode_json(refund_payload(320)))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
 
 
 def test_refund_string_amount_is_accepted(client: TestClient) -> None:
     response = post_body(client, encode_json(refund_payload("100.50")))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
 
 
 def test_currency_defaults_to_aed_when_absent(client: TestClient) -> None:
     response = post_body(client, encode_json(refund_payload(100)))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
 
 
 def test_currency_is_case_insensitive(client: TestClient) -> None:
     response = post_body(client, encode_json(refund_payload(100, currency="aed")))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +473,7 @@ def test_prompt_injection_does_not_mutate_server_state(client: TestClient) -> No
     assert still_rejected.status_code == 403
     assert still_rejected.json()["error"]["details"]["limit_aed"] == "320"
     assert still_accepted.status_code == 200
-    assert still_accepted.json() == {"status": "processed"}
+    assert still_accepted.json()["status"] == "processed"
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +488,7 @@ def test_limit_255_from_environment_accepts_255_and_rejects_256() -> None:
         rejected_320 = post_body(client, encode_json(refund_payload(320)))
 
     assert accepted.status_code == 200
-    assert accepted.json() == {"status": "processed"}
+    assert accepted.json()["status"] == "processed"
 
     assert rejected.status_code == 403
     assert rejected.json()["error"]["details"]["limit_aed"] == "255"

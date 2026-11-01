@@ -115,7 +115,7 @@ def test_refund_event_is_recognized(client: TestClient) -> None:
     response = post_payload(client, REFUND_PAYLOAD)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "processed"}
+    assert response.json()["status"] == "processed"
 
 
 def test_faq_event_is_recognized(client: TestClient) -> None:
