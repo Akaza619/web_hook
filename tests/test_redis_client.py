@@ -29,7 +29,7 @@ from app.services.redis_client import (
     set_value_with_expiration,
 )
 
-REDIS_URL = "redis://localhost:6379/15"
+REDIS_URL = "redis://127.0.0.1:6379/15"
 TEST_ENV = {
     "APP_ENV": "test",
     "SIGNING_SECRET": "redis-test-signing-secret",
@@ -656,7 +656,7 @@ def test_real_redis_round_trip_when_available() -> None:
     import asyncio
 
     async def round_trip() -> None:
-        manager = RedisManager(REDIS_URL, timeout_seconds=0.3)
+        manager = RedisManager(REDIS_URL, timeout_seconds=3.0)
         connected = await manager.connect()
         if not connected:
             pytest.skip("Local Redis is not available")

@@ -54,6 +54,32 @@ uvicorn app.main:app --reload
 - Webhook endpoint: `POST http://127.0.0.1:8000/api/guard`
 - Interactive docs: <http://127.0.0.1:8000/docs>
 
+## Deploy on Render
+
+| Setting | Value |
+| --- | --- |
+| Runtime | Python 3 |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+| Health check path | `/health` |
+
+Environment variables (set in the Render dashboard, never in git):
+
+| Variable | Value |
+| --- | --- |
+| `APP_ENV` | `production` |
+| `SIGNING_SECRET` | the assessment signing secret |
+| `REDIS_URL` | the Render Key Value **internal** URL (`redis://red-...:6379`) |
+| `REFUND_LIMIT_AED` | `320` (change to `255` for the demo; Render redeploys) |
+| `IDEMPOTENCY_TTL_SECONDS` | `300` |
+| `SIGNATURE_HEADER` | `x-pinhire-hmac-3126` (optional; this is the default) |
+
+With `APP_ENV=production` the app refuses to start if `SIGNING_SECRET` or
+`REDIS_URL` is missing or a placeholder, so it can never silently fall back to
+`localhost`. After deploying, `GET /health` must report
+`"status": "healthy"`, `"redis": "connected"`, `"environment": "production"`.
+The public webhook is `POST https://<service>.onrender.com/api/guard`.
+
 ## Local Redis
 
 Start a local Redis 7 container:
@@ -410,6 +436,10 @@ SET pinhire:idempotency:TX1001 <json record> NX EX 300
    lock, and the request returns **500** `refund_processing_failed`. A later
    retry can then run. If the process crashes instead, the lock expires after
    at most 300 seconds, allowing recovery.
+8. If the refund ran but Redis fails while recording `completed`, the request
+   returns **503** `idempotency_unavailable` and the `processing` lock is
+   kept (not released), so retries get **409** until it expires and the
+   refund can never run twice.
 
 The completed record is **not** released immediately after success, so the
 transaction stays protected for the full 300-second window. Lua compare-and-set

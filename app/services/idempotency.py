@@ -277,6 +277,9 @@ async def execute_once(
       ``status="processed"``.
     * If the operation fails, the owned lock is released and the exception is
       re-raised, so a retry can run and no success is ever reported.
+    * If the operation succeeds but recording completion fails, the
+      ``processing`` lock is kept until its TTL expires, so a retry cannot run
+      the operation a second time. The error is re-raised.
     """
 
     lock = await acquire_transaction_lock(
@@ -289,11 +292,6 @@ async def execute_once(
 
     try:
         value = await operation()
-        completed = await complete_transaction(
-            redis=redis,
-            lock=lock,
-            ttl_seconds=ttl_seconds,
-        )
     except BaseException:
         try:
             await release_transaction(redis=redis, lock=lock)
@@ -304,6 +302,12 @@ async def execute_once(
             )
         raise
 
+    # The operation has run: never release the lock from here on.
+    completed = await complete_transaction(
+        redis=redis,
+        lock=lock,
+        ttl_seconds=ttl_seconds,
+    )
     if not completed:
         # Ownership was lost (for example the lock expired). Do not claim the
         # refund was processed; another request may own the transaction now.

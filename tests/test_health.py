@@ -13,7 +13,7 @@ BASE_ENV = {
     "APP_NAME": "Pinhire Webhook Server",
     "APP_VERSION": "0.1.0",
     "SIGNING_SECRET": "test-only-signing-secret",
-    "REDIS_URL": "redis://localhost:6379/15",
+    "REDIS_URL": "redis://127.0.0.1:6379/15",
     "REDIS_TIMEOUT_SECONDS": "0.1",
 }
 

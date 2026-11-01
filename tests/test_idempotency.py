@@ -24,12 +24,12 @@ from app.services.idempotency import (
     idempotency_key,
     validate_transaction_reference,
 )
-from app.services.redis_client import RedisManager
+from app.services.redis_client import RedisManager, RedisOperationError
 from tests.fakes import InMemoryRedisManager
 
 SIGNING_SECRET = "idempotency-test-signing-secret"
 SIGNATURE_HEADER = "x-pinhire-hmac-3126"
-REDIS_URL = "redis://localhost:6379/15"
+REDIS_URL = "redis://127.0.0.1:6379/15"
 
 TEST_ENV = {
     "APP_ENV": "test",
@@ -406,6 +406,43 @@ def test_failed_processing_is_never_reported_as_processed(monkeypatch) -> None:
     assert response.json()["status"] == "error"
     assert response.json()["error"]["code"] == "refund_processing_failed"
     assert "processed" not in response.text
+
+
+def test_completion_failure_keeps_lock_so_refund_never_runs_twice(
+    monkeypatch,
+) -> None:
+    manager = InMemoryRedisManager()
+    original = webhook_module._process_refund_operation
+    calls = 0
+
+    async def counting_operation(event, *, limit_aed):
+        nonlocal calls
+        calls += 1
+        return await original(event, limit_aed=limit_aed)
+
+    async def failing_complete(*args, **kwargs):
+        raise RedisOperationError("Redis EVAL complete failed.")
+
+    monkeypatch.setattr(
+        webhook_module,
+        "_process_refund_operation",
+        counting_operation,
+    )
+    monkeypatch.setattr(manager, "compare_and_set_with_expiration", failing_complete)
+
+    with build_client(manager) as client:
+        failed = post_body(client, encode_json(refund_payload(100)))
+        state_after_failure = asyncio.run(
+            get_transaction_state(redis=manager, tx_ref="TX1001")
+        )
+        retried = post_body(client, encode_json(refund_payload(100)))
+
+    assert failed.status_code == 503
+    assert failed.json()["error"]["code"] == "idempotency_unavailable"
+    assert state_after_failure == "processing"
+    assert retried.status_code == 409
+    assert retried.json() == {"status": "duplicate"}
+    assert calls == 1
 
 
 # ---------------------------------------------------------------------------

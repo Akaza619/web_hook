@@ -33,7 +33,7 @@ from tests.fakes import InMemoryRedisManager
 
 SIGNING_SECRET = "integration-test-signing-secret"
 SIGNATURE_HEADER = "x-pinhire-hmac-3126"
-REDIS_URL = "redis://localhost:6379/15"
+REDIS_URL = "redis://127.0.0.1:6379/15"
 
 TEST_ENV = {
     "APP_ENV": "test",
